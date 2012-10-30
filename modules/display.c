@@ -193,6 +193,10 @@ static guint disp_blank_timeout_gconf_cb_id = 0;
 
 /** Use low power mode setting */
 static gboolean use_low_power_mode = FALSE;
+
+/** Demo mode active/inactive */
+static gboolean demo_mode = FALSE;
+
 /** GConf callback ID for low power mode setting */
 static guint use_low_power_mode_gconf_cb_id = 0;
 
@@ -1648,12 +1652,15 @@ static void update_blanking_inhibit(gboolean timed_inhibit)
 	}
 
 	/* Reprogram timeouts, if necessary */
-	if (display_state == MCE_DISPLAY_ON)
-		setup_dim_timeout();
-	else if (display_state == MCE_DISPLAY_DIM)
-		setup_lpm_timeout();
-	else if (display_state == MCE_DISPLAY_LPM_ON)
-		setup_blank_timeout();
+	if(!demo_mode)
+	{
+		if (display_state == MCE_DISPLAY_ON)
+			setup_dim_timeout();
+		else if (display_state == MCE_DISPLAY_DIM)
+			setup_lpm_timeout();
+		else if (display_state == MCE_DISPLAY_LPM_ON)
+			setup_blank_timeout();
+	}
 }
 
 /**
@@ -1987,10 +1994,46 @@ static gboolean display_set_demo_mode_dbus_cb(DBusMessage *const msg)
 	}
 
 	if(!strcmp(use, "on"))
+	{
+		demo_mode = TRUE;
+		/* unblank screen */	
+		(void)execute_datapipe(&display_state_pipe,
+                                       GINT_TO_POINTER(MCE_DISPLAY_ON),
+                                       USE_INDATA, CACHE_INDATA);
+		/* generate activity */
+		(void)execute_datapipe(&device_inactive_pipe,
+                                               GINT_TO_POINTER(FALSE),
+                                               USE_INDATA, CACHE_INDATA);
+		request_display_blanking_pause();
+		cancel_lpm_proximity_blank_timeout();
+		cancel_adaptive_dimming_timeout();
+		cancel_dim_timeout();
+		cancel_lpm_timeout();
+		cancel_blank_timeout();
+		cancel_brightness_fade_timeout();
+		/* might be handled by request display blanking pause */
 		blanking_inhibit_mode = INHIBIT_STAY_ON;
+		dimming_inhibited = TRUE;
+		update_blanking_inhibit(TRUE);
+	}
 	else
-		blanking_inhibit_mode = DEFAULT_BLANKING_INHIBIT_MODE;
-
+	{
+		demo_mode = FALSE;
+		cancel_blank_prevent();
+		blanking_inhibit_mode = INHIBIT_OFF;
+		dimming_inhibited = FALSE;
+		update_blanking_inhibit(FALSE);
+		/* generate activity */ 
+                (void)execute_datapipe(&device_inactive_pipe, 
+                                               GINT_TO_POINTER(FALSE), 
+                                               USE_INDATA, CACHE_INDATA);
+		setup_lpm_proximity_blank_timeout();
+		setup_adaptive_dimming_timeout();
+		setup_dim_timeout();
+		setup_lpm_timeout();
+		setup_blank_timeout();
+		
+	}
 	if((reply = dbus_message_new_method_return(msg)))
 		if(dbus_message_append_args (reply, DBUS_TYPE_STRING, &use, DBUS_TYPE_INVALID) == FALSE)
 		{
@@ -2611,6 +2654,11 @@ static void display_state_trigger(gconstpointer data)
 	submode_t submode = mce_get_submode_int32();
 
 	cancel_lpm_proximity_blank_timeout();
+	
+	if(demo_mode)
+	{
+		display_state = MCE_DISPLAY_ON;
+	}
 
 	switch (display_state) {
 	case MCE_DISPLAY_OFF:
